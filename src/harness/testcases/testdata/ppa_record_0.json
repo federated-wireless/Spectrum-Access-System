@@ -3,6 +3,10 @@
   "creator": "admin_0",
   "usage": "PPA",
   "terminated": false,
+  "ppaInfo": {
+    "cbsdReferenceId": [],
+    "ppaRegionType": "URBAN"
+  },
   "zone": {
     "type": "FeatureCollection",
     "features": [

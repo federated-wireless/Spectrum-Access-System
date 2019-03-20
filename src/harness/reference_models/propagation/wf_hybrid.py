@@ -19,43 +19,27 @@ Irregular Terrain Model (ITM) and Free Space Loss (FSL), as described
 in WinnForum specification R2-SGN-04.
 
 Typical usage:
-  # Reconfigure the terrain driver
-   #  - reset the terrain tile directory
-  ConfigureTerrainDriver(terrain_dir=my_ned_path)
-   #  - reset the cache size. Memory use is: cache_size * 50MB
-  ConfigureTerrainDriver(cache_size=8)
+  # Configure the terrain driver (memory use is: cache_size * 50MB)
+  from reference_models.geo import drive
+  drive.ConfigureTerrainDriver(terrain_dir=my_ned_path, cache_size=16)
 
   # Get the path loss and incidence angles
   db_loss, incidence_angles, internals = CalcHybridPropagationLoss(
               lat_cbsd, lon_cbsd, height_cbsd,
               lat_rx, lon_rx, height_rx,
+              cbsd_indoor=False,
               reliability=0.5,
               freq_mhz=3625.,
               region='URBAN')
 """
 
 from collections import namedtuple
-import logging
 import math
 
-from reference_models.geo import terrain
+from reference_models.geo import drive
 from reference_models.geo import vincenty
-
 from reference_models.propagation import wf_itm
 from reference_models.propagation.ehata import ehata
-
-
-# Configure the terrain driver
-def ConfigureTerrainDriver(terrain_dir=None, cache_size=None):
-  """Configure the NED terrain driver.
-
-  Note that memory usage is about cache_size * 50MB.
-
-  Inputs:
-    terrain_dir: if specified, modify the terrain directory.
-    cache_size:  if specified, change the terrain tile cache size.
-  """
-  wf_itm.ConfigureTerrainDriver(terrain_dir=terrain_dir, cache_size=cache_size)
 
 
 # eHata standard deviation calculation parameters
@@ -106,27 +90,33 @@ def GetEHataStandardDeviation(freq_mhz, is_urban):
   Returns:
     the offset in dB to apply to the median
   """
-  std = (_ALPHA_U + _BETA_U * math.log10(freq_mhz)
-         + _GAMMA_U * math.log10(freq_mhz)**2)
-  if not is_urban:
-    std += 2
-  return std
+  return 8.4 if is_urban else 10.4
+  # Exact formula is:
+  # std = (_ALPHA_U + _BETA_U * math.log10(freq_mhz)
+  #       + _GAMMA_U * math.log10(freq_mhz)**2)
+  # if not is_urban:
+  #  std += 2
+  # return std
 
 
 # Offset from median to mean dB
 def _GetMedianToMeanOffsetDb(freq_mhz, is_urban):
-  """Gets the Offset from median to mean for lognormal distribution.
+  """Gets the Offset from median to mean for inverse lognormal distribution.
+
+  Note that the offset is computed in order to have
+    (median_pathloss + offset) being 1/<1/L>, ie the pathloss corresponding to
+  the mean signal level. This explains the minus applied to the offset.
 
   Inputs:
     freq_mhz:  the frequency in MHz. Used to compute the eHata stdev.
     is_urban:  if False, an extra 2dB is added to the stdev
 
   Returns:
-    the offset in dB to apply to the median
+    the offset in dB to apply to the median pathloss.
   """
   std = GetEHataStandardDeviation(freq_mhz, is_urban)
   offset = std**2 * math.log(10.) / 20.
-  return offset
+  return -offset
 
 
 # Defined namedtuple for nice output packing
@@ -142,7 +132,9 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
                               cbsd_indoor=False,
                               reliability=-1,
                               freq_mhz=3625.,
-                              region='RURAL'):
+                              region='RURAL',
+                              is_height_cbsd_amsl=False,
+                              return_internals=False):
   """Implements the Hybrid ITM/eHata NTIA propagation model.
 
   As specified by Winforum, see:
@@ -169,6 +161,8 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
                           Value in [0,1]: returns the CDF quantile
                           -1: returns the mean path loss
     region:             Region type among 'URBAN', 'SUBURBAN, 'RURAL'
+    is_height_cbsd_amsl: If True, the CBSD height shall be considered as AMSL (Average
+                         mean sea level).
 
   Returns:
     A namedtuple of:
@@ -180,7 +174,8 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
           hor_rx:         Horizontal incidence angle (bearing) from Rx to CBSD
           ver_rx:         Vertical incidence angle at Rx
 
-      internals:        A dictionary of internal data for advanced analysis:
+      internals:        A dictionary of internal data for advanced analysis
+                        (only if return_internals=True):
           hybrid_opcode:  Opcode from HybridCode - See GetInfoOnHybridCodes()
           effective_height_cbsd: Effective CBSD antenna height
           itm_db_loss:    Loss in dB for the ITM model.
@@ -193,32 +188,31 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
   Raises:
     Exception if input parameters invalid or out of range.
   """
-  # TODO: Apply quantile in eHata prediction for values not equal to 0.5.
-  #       Not critical since the expected use is only for mean value (ie reliability=-1)
-  #       which is properly managed. For now raise an exception if reliability value
-  #       different of -1 or 0.5
+  # Case of same points
+  if (lat_cbsd == lat_rx and lon_cbsd == lon_rx):
+    return _PropagResult(
+        db_loss = 0,
+        incidence_angles = _IncidenceAngles(0,0,0,0),
+        internals = None)
 
   # Sanity checks on input parameters
-  if height_cbsd < 1 or height_rx < 1:
-    raise Exception('End-point height less than 1m.')
-  if height_cbsd > 1000 or height_rx > 1000:
-    raise Exception('End-point height greater than 1000m.')
   if freq_mhz < 40 or freq_mhz > 10000:
     raise Exception('Frequency outside range [40MHz - 10GHz].')
   if region not in ['RURAL', 'URBAN', 'SUBURBAN']:
     raise Exception('Region %s not allowed' % region)
+  if reliability not in (-1, 0.5):
+    raise Exception('Hybrid model only computes the median or the mean.')
 
-  if reliability != -1 and reliability != 0.5:
-    logging.warning('E-Hata submodel only computes the median.'
-                    'Use GetEhataStdDev() to obtain quantile in case opcode is 4 or 5.')
+  if is_height_cbsd_amsl:
+    altitude_cbsd = drive.terrain_driver.GetTerrainElevation(lat_cbsd, lon_cbsd)
+    height_cbsd = height_cbsd - altitude_cbsd
 
   # Get the terrain profile, using Vincenty great circle route, and WF
   # standard (bilinear interp; 1501 pts for all distances over 45 km)
-  its_elev = wf_itm.terrainDriver.TerrainProfile(lat1=lat_cbsd, lon1=lon_cbsd,
+  its_elev = drive.terrain_driver.TerrainProfile(lat1=lat_cbsd, lon1=lon_cbsd,
                                                  lat2=lat_rx, lon2=lon_rx,
                                                  target_res_meter=30.,
                                                  do_interp=True, max_points=1501)
-
 
   # Structural CBSD and mobile height corrections
   height_cbsd = max(height_cbsd, 20.)
@@ -229,12 +223,16 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
   db_loss_itm, incidence_angles, internals = wf_itm.CalcItmPropagationLoss(
       lat_cbsd, lon_cbsd, height_cbsd,
       lat_rx, lon_rx, height_rx,
-      False, reliability, freq_mhz, its_elev)
+      False, reliability, freq_mhz, its_elev, return_internals=True)
   internals['itm_db_loss'] = db_loss_itm
 
   # Calculate the effective heights of the tx
   height_cbsd_eff = ehata.CbsdEffectiveHeights(height_cbsd, its_elev)
   internals['effective_height_cbsd'] = height_cbsd_eff
+
+  # Get the distance
+  dist_km = internals['dist_km']
+  if not return_internals: internals = None
 
   # Use ITM if CBSD effective height greater than 200 m
   if height_cbsd_eff >= 200:
@@ -250,14 +248,10 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
     return _BuildOutput(db_loss_itm, incidence_angles, internals,
                         HybridMode.ITM_RURAL, cbsd_indoor)
 
-  # The eHata offset to apply (in case the mean is requested)
-  offset_median_to_mean = 0.
-  if reliability == -1:
-    offset_median_to_mean = _GetMedianToMeanOffsetDb(freq_mhz, region == 'URBAN')
+  # The eHata offset to apply (only in case the mean is requested)
+  offset_median_to_mean = _GetMedianToMeanOffsetDb(freq_mhz, region == 'URBAN')
 
   # Now process the different cases
-  dist_km = internals['dist_km']
-
   if dist_km <= 0.1:  # Use Free Space Loss
     db_loss = CalcFreeSpaceLoss(dist_km, freq_mhz, height_cbsd, height_rx)
     return _BuildOutput(db_loss, incidence_angles, internals,
@@ -273,7 +267,8 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
 
     # TODO: validate the following approach with WinnForum participants:
     # Weight the offset as well from 0 (100m) to 1.0 (1km).
-    db_loss += alpha * offset_median_to_mean
+    if reliability == -1:
+      db_loss += alpha * offset_median_to_mean
     return _BuildOutput(db_loss, incidence_angles, internals,
                         HybridMode.EHATA_FSL_INTERP, cbsd_indoor)
 
@@ -281,8 +276,10 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
     ehata_loss_med = ehata.ExtendedHata(its_elev, freq_mhz, height_cbsd, height_rx,
                                         region_code)
     if reliability == 0.5:
+      ehata_loss = ehata_loss_med
       itm_loss_med = db_loss_itm
     else:
+      ehata_loss = ehata_loss_med + offset_median_to_mean
       itm_loss_med = wf_itm.CalcItmPropagationLoss(
           lat_cbsd, lon_cbsd, height_cbsd, lat_rx, lon_rx, height_rx,
           False, 0.5, freq_mhz, its_elev).db_loss
@@ -291,7 +288,6 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
       return _BuildOutput(db_loss_itm, incidence_angles, internals,
                           HybridMode.ITM_DOMINANT, cbsd_indoor)
     else:
-      ehata_loss = ehata_loss_med + offset_median_to_mean
       return _BuildOutput(ehata_loss, incidence_angles, internals,
                           HybridMode.EHATA_DOMINANT, cbsd_indoor)
 
@@ -301,7 +297,7 @@ def CalcHybridPropagationLoss(lat_cbsd, lon_cbsd, height_cbsd,
 
     lat_80km, lon_80km, _ = vincenty.GeodesicPoint(lat_cbsd, lon_cbsd,
                                                    80., bearing)
-    its_elev_80km = wf_itm.terrainDriver.TerrainProfile(
+    its_elev_80km = drive.terrain_driver.TerrainProfile(
         lat_cbsd, lon_cbsd, lat_80km, lon_80km,
         target_res_meter=30.,
         do_interp=True, max_points=1501)
@@ -340,7 +336,8 @@ def CalcFreeSpaceLoss(dist_km, freq_mhz, height_cbsd, height_rx):
 def _BuildOutput(db_loss, incidence_angles, internals,
                  hybrid_opcode, is_indoor):
   """Build the output of CalcHybridPropagationLoss."""
-  internals['hybrid_opcode'] = hybrid_opcode
+  if internals:
+    internals['hybrid_opcode'] = hybrid_opcode
   if is_indoor:
     db_loss += 15
   return _PropagResult(

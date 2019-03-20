@@ -11,6 +11,10 @@ This folder contains code and testcases for SAS certification test as defined in
 *   cryptography (https://pypi.python.org/pypi/cryptography)
 *   jsonschema 2.6.0 (https://pypi.python.org/pypi/jsonschema)
 *   shapely (https://pypi.python.org/pypi/Shapely)
+*   mock (https://pypi.python.org/pypi/mock)
+*   validators (https://pypi.python.org/pypi/validators)
+*   pytz (https://pypi.org/project/pytz)
+*   portpicker (https://pypi.org/project/portpicker)
 
 ## Code location
 

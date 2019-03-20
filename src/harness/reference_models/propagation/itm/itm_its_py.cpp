@@ -64,12 +64,13 @@ static PyObject* itm_point_to_point(PyObject* self, PyObject* args) {
   double dbloss;
   char strmode[100];
   int errnum;
+  double ver0, ver1;
   point_to_point(elev, tht_m, rht_m, eps_dielect, sgm_conductivity,
                  eno_ns_surfref, frq_mhz, radio_climate, pol, conf, rel,
                  mdvar, !!eno_final,
-                 dbloss, strmode, errnum);
+                 dbloss, strmode, errnum, ver0, ver1);
   delete[] elev;
-  return Py_BuildValue("dsi", dbloss, strmode, errnum);
+  return Py_BuildValue("dddsi", dbloss, ver0, ver1, strmode, errnum);
 }
 
 static PyObject* itm_point_to_point_rels(PyObject* self, PyObject* args) {
@@ -141,13 +142,14 @@ static PyObject* itm_point_to_point_rels(PyObject* self, PyObject* args) {
   }
   int num_rels = size;
   double* db_losses = new double[num_rels];
+  double ver0, ver1;
   char strmode[100];
   int errnum;
   point_to_point_rels(elev, tht_m, rht_m, eps_dielect, sgm_conductivity,
                       eno_ns_surfref, frq_mhz, radio_climate, pol, conf,
                       rels, num_rels,
                       mdvar, !!eno_final,
-                      db_losses, strmode, errnum);
+                      db_losses, strmode, errnum, ver0, ver1);
   delete[] elev;
   delete[] rels;
 
@@ -156,8 +158,9 @@ static PyObject* itm_point_to_point_rels(PyObject* self, PyObject* args) {
     PyList_SET_ITEM(loss_obj, k, Py_BuildValue("d", db_losses[k]));
   }
   delete[] db_losses;
-
-  return Py_BuildValue("Osi", loss_obj, strmode, errnum);
+  // Note: use N instead of O here to avoid increment of ref count of loss_obj.
+  // Otherwise would have a mem leak, since it would never be released.
+  return Py_BuildValue("Nddsi", loss_obj, ver0, ver1, strmode, errnum);
 }
 
 static PyMethodDef ITMMethods[] = {

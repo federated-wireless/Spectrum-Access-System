@@ -15,7 +15,7 @@
 import numpy as np
 import unittest
 
-import antenna
+from reference_models.antenna import antenna
 
 
 class TestAntenna(unittest.TestCase):
@@ -48,11 +48,19 @@ class TestAntenna(unittest.TestCase):
   def test_standard_gain(self):
     # Isotropic antenna
     gains = antenna.GetStandardAntennaGains([0, 90, 180, 270],
-                                           0, None, 5)
+                                            0, None, 5)
     self.assertEqual(np.max(np.abs(
         gains - 5 * np.ones(4))), 0)
     gains = antenna.GetStandardAntennaGains([0, 90, 180, 270],
-                                           None, 90, 5)
+                                            None, 90, 5)
+    self.assertEqual(np.max(np.abs(
+        gains - 5 * np.ones(4))), 0)
+    gains = antenna.GetStandardAntennaGains([0, 90, 180, 270],
+                                            0, 0, 5)
+    self.assertEqual(np.max(np.abs(
+        gains - 5 * np.ones(4))), 0)
+    gains = antenna.GetStandardAntennaGains([0, 90, 180, 270],
+                                            0, 360, 5)
     self.assertEqual(np.max(np.abs(
         gains - 5 * np.ones(4))), 0)
 
@@ -93,6 +101,11 @@ class TestAntenna(unittest.TestCase):
     gains = antenna.GetRadarNormalizedAntennaGains([5, 8.6, 11.4, 20], 10)
     self.assertEqual(np.max(np.abs(
         gains - np.array([-25, 0, 0, -25]))), 0)
+
+    gains = antenna.GetRadarNormalizedAntennaGains([5, 8.99, 9.01, 10, 10.99, 11.01],
+                                                   10, radar_beamwidth=2)
+    self.assertEqual(np.max(np.abs(
+        gains - np.array([-25, -25, 0, 0, 0, -25]))), 0)
 
   def test_fss_gain(self):
     # Test the internal GSO gains

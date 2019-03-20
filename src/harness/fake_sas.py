@@ -1,4 +1,4 @@
-#    Copyright 2016 SAS Project Authors. All Rights Reserved.
+#    Copyright 2018 SAS Project Authors. All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -13,32 +13,32 @@
 #    limitations under the License.
 
 
-# Some parts of this software was developed by employees of 
-# the National Institute of Standards and Technology (NIST), 
-# an agency of the Federal Government. 
-# Pursuant to title 17 United States Code Section 105, works of NIST employees 
-# are not subject to copyright protection in the United States and are 
-# considered to be in the public domain. Permission to freely use, copy, 
-# modify, and distribute this software and its documentation without fee 
-# is hereby granted, provided that this notice and disclaimer of warranty 
+# Some parts of this software was developed by employees of
+# the National Institute of Standards and Technology (NIST),
+# an agency of the Federal Government.
+# Pursuant to title 17 United States Code Section 105, works of NIST employees
+# are not subject to copyright protection in the United States and are
+# considered to be in the public domain. Permission to freely use, copy,
+# modify, and distribute this software and its documentation without fee
+# is hereby granted, provided that this notice and disclaimer of warranty
 # appears in all copies.
 
-# THE SOFTWARE IS PROVIDED 'AS IS' WITHOUT ANY WARRANTY OF ANY KIND, EITHER 
+# THE SOFTWARE IS PROVIDED 'AS IS' WITHOUT ANY WARRANTY OF ANY KIND, EITHER
 # EXPRESSED, IMPLIED, OR STATUTORY, INCLUDING, BUT NOT LIMITED TO, ANY WARRANTY
 # THAT THE SOFTWARE WILL CONFORM TO SPECIFICATIONS, ANY IMPLIED WARRANTIES OF
-# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND FREEDOM FROM 
-# INFRINGEMENT, AND ANY WARRANTY THAT THE DOCUMENTATION WILL CONFORM TO THE 
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND FREEDOM FROM
+# INFRINGEMENT, AND ANY WARRANTY THAT THE DOCUMENTATION WILL CONFORM TO THE
 # SOFTWARE, OR ANY WARRANTY THAT THE SOFTWARE WILL BE ERROR FREE. IN NO EVENT
-# SHALL NIST BE LIABLE FOR ANY DAMAGES, INCLUDING, BUT NOT LIMITED TO, DIRECT, 
-# INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES, ARISING OUT OF, RESULTING FROM, 
-# OR IN ANY WAY CONNECTED WITH THIS SOFTWARE, WHETHER OR NOT BASED UPON 
+# SHALL NIST BE LIABLE FOR ANY DAMAGES, INCLUDING, BUT NOT LIMITED TO, DIRECT,
+# INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES, ARISING OUT OF, RESULTING FROM,
+# OR IN ANY WAY CONNECTED WITH THIS SOFTWARE, WHETHER OR NOT BASED UPON
 # WARRANTY, CONTRACT, TORT, OR OTHERWISE, WHETHER OR NOT INJURY WAS SUSTAINED
 # BY PERSONS OR PROPERTY OR OTHERWISE, AND WHETHER OR NOT LOSS WAS SUSTAINED
-# FROM, OR AROSE OUT OF THE RESULTS OF, OR USE OF, THE SOFTWARE OR SERVICES 
+# FROM, OR AROSE OUT OF THE RESULTS OF, OR USE OF, THE SOFTWARE OR SERVICES
 # PROVIDED HEREUNDER.
 
-# Distributions of NIST software should also include copyright and licensing 
-# statements of any third-party software that are legally bundled with the 
+# Distributions of NIST software should also include copyright and licensing
+# statements of any third-party software that are legally bundled with the
 # code in compliance with the conditions of those licenses.
 
 """A fake implementation of SasInterface, based on v1.0 of the SAS-CBSD TS.
@@ -51,11 +51,14 @@ import argparse
 from BaseHTTPServer import BaseHTTPRequestHandler
 from BaseHTTPServer import HTTPServer
 import ConfigParser
+from OpenSSL import crypto
 from datetime import datetime
 from datetime import timedelta
 import uuid
 import json
 import ssl
+import sys
+import tempfile
 import os
 import sas_interface
 
@@ -89,6 +92,7 @@ class FakeSas(sas_interface.SasInterface):
   """
 
   def __init__(self):
+    self.maximum_batch_size = 100
     pass
 
   def Registration(self, request, ssl_cert=None, ssl_key=None):
@@ -136,7 +140,7 @@ class FakeSas(sas_interface.SasInterface):
              'cbsdId': req['cbsdId'],
              'response': self._GetMissingParamResponse()
            })
-        else:   
+        else:
           response['grantResponse'].append({
             'cbsdId': req['cbsdId'],
             'grantId': 'fake_grant_id_%s' % datetime.utcnow().isoformat(),
@@ -182,16 +186,6 @@ class FakeSas(sas_interface.SasInterface):
         })
     return response
 
-  def GetSasImplementationRecord(self, request, ssl_cert=None, ssl_key=None):
-    # Get the Sas implementation record
-    impl_record = json.load(
-      open(os.path.join('testcases', 'testdata', 'impl_record_0.json')))
-    if request == impl_record['id']:
-      return impl_record
-    else:
-      # Return Empty if invalid Id
-      return {}
-
   def GetEscSensorRecord(self, request, ssl_cert=None, ssl_key=None):
     # Get the Esc Sensor record
     esc_sensor_record = json.load(
@@ -202,12 +196,43 @@ class FakeSas(sas_interface.SasInterface):
       # Return Empty if invalid Id
       return {}
 
+  def GetFullActivityDump(self, version, ssl_cert=None, ssl_key=None):
+    response = json.loads(json.dumps({'files': [
+      {'url': 'https://raw.githubusercontent.com/Wireless-Innovation-Forum/' +
+              'Spectrum-Access-System/master/schema/empty_activity_dump_file.json',
+       'checksum': 'da39a3ee5e6b4b0d3255bfef95601890afd80709', 'size': 19,
+       'version': version, 'recordType': "cbsd"},
+      {
+        'url': 'https://raw.githubusercontent.com/Wireless-Innovation-Forum/Spectrum-Access-System/master/schema/empty_activity_dump_file.json',
+        'checksum': 'da39a3ee5e6b4b0d3255bfef95601890afd80709', 'size': 19,
+        'version': version, 'recordType': "zone"},
+      {
+        'url': 'https://raw.githubusercontent.com/Wireless-Innovation-Forum/Spectrum-Access-System/master/schema/empty_activity_dump_file.json',
+        'checksum': 'da39a3ee5e6b4b0d3255bfef95601890afd80709', 'size': 19,
+        'version': version, 'recordType': "esc_sensor"},
+      {
+        'url': 'https://raw.githubusercontent.com/Wireless-Innovation-Forum/Spectrum-Access-System/master/schema/empty_activity_dump_file.json',
+        'checksum': 'da39a3ee5e6b4b0d3255bfef95601890afd80709', 'size': 19,
+        'version': version, 'recordType': "coordination"}
+    ],
+      'generationDateTime': datetime.utcnow().strftime(
+          '%Y-%m-%dT%H:%M:%SZ'),
+      'description': "Full activity dump files"}))
+    return response
+
   def _GetSuccessResponse(self):
     return {'responseCode': 0}
 
   def _GetMissingParamResponse(self):
     return {'responseCode': MISSING_PARAM}
 
+  def DownloadFile(self, url, ssl_cert=None, ssl_key=None):
+    """SAS-SAS Get data from json files after generate the
+     Full Activity Dump Message
+    Returns:
+     the message as an "json data" object specified in WINNF-16-S-0096
+    """
+    pass
 
 class FakeSasAdmin(sas_interface.SasAdminInterface):
   """Implementation of SAS Admin for Fake SAS."""
@@ -220,6 +245,9 @@ class FakeSasAdmin(sas_interface.SasAdminInterface):
   def InjectUserId(self, request):
     pass
 
+  def InjectCpiUser(self, request):
+    pass
+
   def BlacklistByFccId(self, request):
     pass
 
@@ -227,6 +255,9 @@ class FakeSasAdmin(sas_interface.SasAdminInterface):
     pass
 
   def PreloadRegistrationData(self, request):
+    pass
+
+  def InjectExclusionZone(self, request, ssl_cert=None, ssl_key=None):
     pass
 
   def InjectZoneData(self, request, ssl_cert=None, ssl_key=None):
@@ -244,10 +275,10 @@ class FakeSasAdmin(sas_interface.SasAdminInterface):
   def InjectSasAdministratorRecord(self, request):
     pass
 
-  def InjectSasImplementationRecord(self, request):
+  def InjectEscSensorDataRecord(self, request):
     pass
 
-  def InjectEscSensorDataRecord(self, request):
+  def InjectPeerSas(self, request):
     pass
 
   def TriggerMeasurementReportRegistration(self):
@@ -257,31 +288,57 @@ class FakeSasAdmin(sas_interface.SasAdminInterface):
     pass
 
   def TriggerPpaCreation(self, request, ssl_cert=None, ssl_key=None):
-    return 'zone/ppa/fake_sas/%s/%s' % (request['palIds'][0]['palId'],
+    return 'zone/ppa/fake_sas/%s/%s' % (request['palIds'][0],
                                         uuid.uuid4().hex)
 
   def TriggerDailyActivitiesImmediately(self):
     pass
 
+  def TriggerEnableNtiaExclusionZones(self):
+    pass
+
+  def TriggerEnableScheduledDailyActivities(self):
+    pass
+
+  def QueryPropagationAndAntennaModel(self, request):
+    from testcases.WINNF_FT_S_PAT_testcase import computePropagationAntennaModel
+    return computePropagationAntennaModel(request)
+
   def GetDailyActivitiesStatus(self):
     return {'completed': True}
 
-  def TriggerLoadDpas(self):  
+  def GetPpaCreationStatus(self):
+    return {'completed': True, 'withError': False}
+
+  def GetDailyActivitiesStatus(self):
+    return {'completed': True}
+
+  def TriggerLoadDpas(self):
     pass
 
   def TriggerBulkDpaActivation(self, request):
     pass
 
   def TriggerDpaActivation(self, request):
-    pass 
+    pass
+
+  def TriggerFullActivityDump(self):
+    pass
 
   def TriggerDpaDeactivation(self, request):
     pass
 
+  def TriggerEscDisconnect(self):
+    pass
+
+  def InjectDatabaseUrl(self, request):
+    pass
+
 class FakeSasHandler(BaseHTTPRequestHandler):
   @classmethod
-  def SetVersion(cls, version):
-    cls.version = version
+  def SetVersion(cls, cbsd_sas_version, sas_sas_version):
+    cls.cbsd_sas_version = cbsd_sas_version
+    cls.sas_sas_version = sas_sas_version
 
   def _parseUrl(self, url):
     """Parse the Url into the path and value."""
@@ -295,31 +352,42 @@ class FakeSasHandler(BaseHTTPRequestHandler):
     length = int(self.headers.getheader('content-length'))
     if length > 0:
       request = json.loads(self.rfile.read(length))
-    if self.path == '/%s/registration' % self.version:
+    if self.path == '/%s/registration' % self.cbsd_sas_version:
       response = FakeSas().Registration(request)
-    elif self.path == '/%s/spectrumInquiry' % self.version:
+    elif self.path == '/%s/spectrumInquiry' % self.cbsd_sas_version:
       response = FakeSas().SpectrumInquiry(request)
-    elif self.path == '/%s/grant' % self.version:
+    elif self.path == '/%s/grant' % self.cbsd_sas_version:
       response = FakeSas().Grant(request)
-    elif self.path == '/%s/heartbeat' % self.version:
+    elif self.path == '/%s/heartbeat' % self.cbsd_sas_version:
       response = FakeSas().Heartbeat(request)
-    elif self.path == '/%s/relinquishment' % self.version:
+    elif self.path == '/%s/relinquishment' % self.cbsd_sas_version:
       response = FakeSas().Relinquishment(request)
-    elif self.path == '/%s/deregistration' % self.version:
+    elif self.path == '/%s/deregistration' % self.cbsd_sas_version:
       response = FakeSas().Deregistration(request)
     elif self.path == '/admin/injectdata/zone':
       response = FakeSasAdmin().InjectZoneData(request)
-    elif self.path == 'admin/trigger/create_ppa':
+    elif self.path == '/admin/trigger/create_ppa':
       response = FakeSasAdmin().TriggerPpaCreation(request)
-    elif self.path == 'admin/get_daily_activities_status':
+    elif self.path == '/admin/get_daily_activities_status':
       response = FakeSasAdmin().GetDailyActivitiesStatus()
+    elif self.path == '/admin/get_daily_activities_status':
+      response = FakeSasAdmin().GetDailyActivitiesStatus()
+    elif self.path == '/admin/get_ppa_status':
+      response = FakeSasAdmin().GetPpaCreationStatus()
+    elif self.path == '/admin/query/propagation_and_antenna_model':
+      try:
+        response = FakeSasAdmin().QueryPropagationAndAntennaModel(request)
+      except ValueError:
+        self.send_response(400)
+      return
     elif self.path in ('/admin/reset', '/admin/injectdata/fcc_id',
                        '/admin/injectdata/user_id',
                        '/admin/injectdata/conditional_registration',
                        '/admin/injectdata/blacklist_fcc_id',
                        '/admin/injectdata/blacklist_fcc_id_and_serial_number',
-                       '/admin/injectdata/fss', '/admin/injectdata/wisp',
-                       '/admin/injectdata/cluster_list',
+                       '/admin/injectdata/fss',
+                       '/admin/injectdata/wisp',
+                       '/admin/injectdata/peer_sas',
                        '/admin/injectdata/pal_database_record',
                        '/admin/injectdata/sas_admin',
                        '/admin/injectdata/sas_impl',
@@ -328,10 +396,14 @@ class FakeSasHandler(BaseHTTPRequestHandler):
                        '/admin/trigger/meas_report_in_registration_response',
                        '/admin/trigger/meas_report_in_heartbeat_response',
                        '/admin/trigger/daily_activities_immediately',
+                       '/admin/trigger/enable_scheduled_daily_activities',
                        '/admin/trigger/load_dpas',
                        '/admin/trigger/dpa_activation',
                        '/admin/trigger/dpa_deactivation',
-                       '/admin/trigger/bulk_dpa_activation'):
+                       '/admin/trigger/bulk_dpa_activation',
+                       '/admin/injectdata/exclusion_zone',
+                       '/admin/trigger/create_full_activity_dump',
+                       '/admin/injectdata/database_url'):
       response = ''
     else:
       self.send_response(404)
@@ -344,10 +416,10 @@ class FakeSasHandler(BaseHTTPRequestHandler):
   def do_GET(self):
     """Handles GET requests."""
     path, value = self._parseUrl(self.path)
-    if path == '%s/sas_impl' % self.version:
-     response = FakeSas().GetSasImplementationRecord(value)
-    elif path == '%s/esc_sensor' % self.version:
+    if path == '%s/esc_sensor' % self.sas_sas_version:
       response = FakeSas().GetEscSensorRecord(value)
+    elif path == '%s/dump' % self.sas_sas_version:
+      response = FakeSas().GetFullActivityDump(self.sas_sas_version)
     else:
       self.send_response(404)
       return
@@ -356,21 +428,58 @@ class FakeSasHandler(BaseHTTPRequestHandler):
     self.end_headers()
     self.wfile.write(json.dumps(response))
 
+def ParseCrlIndex(index_filename):
+  """Returns the list of CRL filenames from a CRL index file."""
+  dirname = os.path.dirname(index_filename)
+  return [os.path.join(dirname, line.rstrip())
+          for line in open(index_filename)]
 
-def RunFakeServer(version, is_ecc):
-  FakeSasHandler.SetVersion(version)
+def RunFakeServer(cbsd_sas_version, sas_sas_version, is_ecc, crl_index):
+  FakeSasHandler.SetVersion(cbsd_sas_version, sas_sas_version)
   if is_ecc:
     assert ssl.HAS_ECDH
   server = HTTPServer(('localhost', PORT), FakeSasHandler)
-  server.socket = ssl.wrap_socket(
-      server.socket,
+
+  ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+  ssl_context.options |= ssl.CERT_REQUIRED
+
+  # If CRLs were provided, then enable revocation checking.
+  if crl_index is not None:
+    ssl_context.verify_flags = ssl.VERIFY_CRL_CHECK_CHAIN
+
+    try:
+      crl_files = ParseCrlIndex(crl_index)
+    except IOError as e:
+      print "Failed to parse CRL index file %r: %s" % (crl_index, e)
+
+    # https://tools.ietf.org/html/rfc5280#section-4.2.1.13 specifies that
+    # CRLs MUST be DER-encoded, but SSLContext expects the name of a PEM-encoded
+    # file, so we must convert it first.
+    for f in crl_files:
+      try:
+        with file(f) as handle:
+          der = handle.read()
+          try:
+            crl = crypto.load_crl(crypto.FILETYPE_ASN1, der)
+          except crypto.Error as e:
+            print "Failed to parse CRL file %r as DER format: %s" % (f, e)
+            return
+          with tempfile.NamedTemporaryFile() as tmp:
+            tmp.write(crypto.dump_crl(crypto.FILETYPE_PEM, crl))
+            tmp.flush()
+            ssl_context.load_verify_locations(cafile=tmp.name)
+        print "Loaded CRL file: %r" % f
+      except IOError as e:
+        print "Failed to load CRL file %r: %s" % (f, e)
+        return
+
+  ssl_context.load_verify_locations(cafile=CA_CERT)
+  ssl_context.load_cert_chain(
       certfile=ECC_CERT_FILE if is_ecc else CERT_FILE,
-      keyfile=ECC_KEY_FILE if is_ecc else KEY_FILE,
-      ca_certs=CA_CERT,
-      cert_reqs=ssl.CERT_REQUIRED,  # CERT_NONE to disable client certificate check
-      ssl_version=ssl.PROTOCOL_TLSv1_2,
-      ciphers=':'.join(ECC_CIPHERS if is_ecc else CIPHERS),
-      server_side=True)
+      keyfile=ECC_KEY_FILE if is_ecc else KEY_FILE)
+  ssl_context.set_ciphers(':'.join(ECC_CIPHERS if is_ecc else CIPHERS))
+  ssl_context.verify_mode = ssl.CERT_REQUIRED
+  server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
   print 'Will start server at localhost:%d, use <Ctrl-C> to stop.' % PORT
   server.serve_forever()
 
@@ -379,9 +488,18 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument(
       '--ecc', help='Use ECDSA certificate', action='store_true')
-  args = parser.parse_args()
-
+  parser.add_argument(
+      '--crl_index',
+      help=('Read a text file containing one DER-encoded CRL file per line, '
+            'and enable revocation checking.'),
+      dest='crl_index', action='store')
+  try:
+    args = parser.parse_args()
+  except:
+    parser.print_help()
+    sys.exit(0)
   config_parser = ConfigParser.RawConfigParser()
   config_parser.read(['sas.cfg'])
-  version = config_parser.get('SasConfig', 'Version')
-  RunFakeServer(version, args.ecc)
+  cbsd_sas_version = config_parser.get('SasConfig', 'CbsdSasVersion')
+  sas_sas_version = config_parser.get('SasConfig', 'SasSasVersion')
+  RunFakeServer(cbsd_sas_version, sas_sas_version, args.ecc, args.crl_index)

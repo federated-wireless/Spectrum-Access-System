@@ -1,4 +1,4 @@
-#    Copyright 2017 SAS Project Authors. All Rights Reserved.
+#    Copyright 2018 SAS Project Authors. All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License");
 #    you may not use this file except in compliance with the License.
@@ -40,14 +40,19 @@
 # statements of any third-party software that are legally bundled with the
 # code in compliance with the conditions of those licenses.
 
+import common_strings
 from datetime import datetime
 import json
+import logging
 import os
+import time
 import sas
 import sas_testcase
+from sas_test_harness import SasTestHarnessServer, generateCbsdRecords
 from util import winnforum_testcase, getRandomLatLongInPolygon, \
-  makePpaAndPalRecordsConsistent
-
+  makePpaAndPalRecordsConsistent, configurable_testcase, writeConfig, \
+  loadConfig, getCertificateFingerprint, addCbsdIdsToRequests, \
+  getRandomLatLongInPolygon, getFqdnLocalhost, getUnusedPort, getCertFilename
 
 class GrantTestcase(sas_testcase.SasTestCase):
 
@@ -56,20 +61,20 @@ class GrantTestcase(sas_testcase.SasTestCase):
     self._sas_admin.Reset()
 
   def tearDown(self):
-    pass
+    self.ShutdownServers()
 
   @winnforum_testcase
   def test_WINNF_FT_S_GRA_1(self):
     """Federal Incumbent present in the PAL frequency range requested by the CBSD
      who is inside the DPA Neighborhood.
-     
+
      grant responseCode = 0 and in heartbeat responseCode = 501(SUSPENDED_GRANT)
      or  grant responseCode = 400
     """
     # Trigger SAS to load DPAs
     self._sas_admin.TriggerLoadDpas()
-    # Trigger SAS to de-active all the DPAs 
-    self._sas_admin.TriggerBulkDpaActivation({'activate':False})
+    # Trigger SAS to de-active all the DPAs
+    self._sas_admin.TriggerBulkDpaActivation({'activate': False})
     #Fix PAl frequency
     pal_low_frequency = 3600000000
     pal_high_frequency = 3610000000
@@ -97,33 +102,34 @@ class GrantTestcase(sas_testcase.SasTestCase):
     zone_id = self._sas_admin.InjectZoneData({'record': ppa_record})
     self.assertTrue(zone_id)
     # Trigger SAS to active one DPA on channel c
-    self._sas_admin.TriggerDpaActivation(\
-        {'frequencyRange':{'lowFrequency': pal_low_frequency ,\
-                           'highFrequency':pal_high_frequency },'dpaId':'east_dpa4'})
-    # UNAPPROVED Not in WINNF-TS-0016 Release 1 Spec, but necessary Step for DPA
-    time.sleep(240) 
+    self._sas_admin.TriggerDpaActivation(
+        {'frequencyRange': {'lowFrequency': pal_low_frequency,
+                            'highFrequency': pal_high_frequency},
+         'dpaId': 'Pascagoula'})
+    # wait for DPA activation
+    time.sleep(240)
     # Send grant request
     grant_0 = json.load(
-      open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
     grant_0['cbsdId'] = cbsd_ids[0]
     grant_0['operationParam']['operationFrequencyRange']['lowFrequency'] \
         = pal_low_frequency
     grant_0['operationParam']['operationFrequencyRange']['highFrequency'] \
-        = pal_high_frequency     
+        = pal_high_frequency
     request = {'grantRequest': [grant_0]}
     response = self._sas.Grant(request)['grantResponse'][0]
     # Check grant response
     self.assertEqual(response['cbsdId'], cbsd_ids[0])
-    if response['response']['responseCode'] == 400 :
-        return
+    if response['response']['responseCode'] == 400:
+      return
     self.assertEqual(response['response']['responseCode'], 0)
     self.assertTrue('grantId' in response)
     grant_id = response['grantId']
     self.assertEqual(response['channelType'], 'PAL')
     heartbeat_request = {
-    'cbsdId': cbsd_ids[0],
-    'grantId': grant_id,
-    'operationState': 'GRANTED'
+        'cbsdId': cbsd_ids[0],
+        'grantId': grant_id,
+        'operationState': 'GRANTED'
     }
     del request, response
     # Send heartbeat request
@@ -131,10 +137,10 @@ class GrantTestcase(sas_testcase.SasTestCase):
     response = self._sas.Heartbeat(request)['heartbeatResponse'][0]
     # Check heartbeat response
     self.assertEqual(response['response']['responseCode'], 501)
-    self.assertEqual(response['cbsdId'], cbsd_ids[0])        
+    self.assertEqual(response['cbsdId'], cbsd_ids[0])
     self.assertEqual(response['grantId'], grant_id)
     transmit_expire_time = datetime.strptime(response['transmitExpireTime'],
-                                               '%Y-%m-%dT%H:%M:%SZ')
+                                             '%Y-%m-%dT%H:%M:%SZ')
     self.assertLessEqual(transmit_expire_time, datetime.utcnow())
 
   @winnforum_testcase
@@ -213,7 +219,7 @@ class GrantTestcase(sas_testcase.SasTestCase):
 
     # Send grant request with CBSD ID not exists in SAS
     grant_0 = json.load(
-      open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
     grant_0['cbsdId'] = 'A non-exist cbsd id'
     request = {'grantRequest': [grant_0]}
     response = self._sas.Grant(request)['grantResponse'][0]
@@ -229,8 +235,8 @@ class GrantTestcase(sas_testcase.SasTestCase):
      SAS rejects the request by sending responseCode 103
     """
     # Load device_a [cert|key]
-    device_a_cert = os.path.join('certs', 'device_a.cert')
-    device_a_key = os.path.join('certs', 'device_a.key')
+    device_a_cert = getCertFilename('device_a.cert')
+    device_a_key = getCertFilename('device_a.key')
 
     # Register the first device with certificates
     device_a = json.load(
@@ -246,8 +252,8 @@ class GrantTestcase(sas_testcase.SasTestCase):
     del request, response
 
     # Load device_c [cert|key]
-    device_c_cert = os.path.join('certs', 'device_c.cert')
-    device_c_key = os.path.join('certs', 'device_c.key')
+    device_c_cert = getCertFilename('device_c.cert')
+    device_c_key = getCertFilename('device_c.key')
 
     # Register the second device with certificates
     device_c = json.load(
@@ -272,6 +278,248 @@ class GrantTestcase(sas_testcase.SasTestCase):
     self.assertFalse('cbsdId' in response)
     self.assertFalse('grantId' in response)
     self.assertEqual(response['response']['responseCode'], 103)
+
+  def generate_GRA_5_default_config(self, filename):
+    """Generates the WinnForum configuration for GRA_5"""
+    # Create the actual config for GRA_5
+
+    # Load device_c1.
+    device_c1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_a.json')))
+
+    # Load grant request.
+    grant_g1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+
+    # Load device_c2.
+    device_c2 = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_b.json')))
+
+    # Creating conditionals for Cat B devices.
+    self.assertEqual(device_c2['cbsdCategory'], 'B')
+    conditional_parameters = {
+        'cbsdCategory': device_c2['cbsdCategory'],
+        'fccId': device_c2['fccId'],
+        'cbsdSerialNumber': device_c2['cbsdSerialNumber'],
+        'airInterface': device_c2['airInterface'],
+        'installationParam': device_c2['installationParam'],
+        'measCapability': device_c2['measCapability']
+    }
+    del device_c2['cbsdCategory']
+    del device_c2['airInterface']
+    del device_c2['installationParam']
+    del device_c2['measCapability']
+
+    # Load grant request
+    grant_g2 = json.load(
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+
+    conditionals = [conditional_parameters]
+
+    sas_harness_config = {
+        'sasTestHarnessName': 'SAS-Test-Harness-1',
+        'hostName': getFqdnLocalhost(),
+        'port': getUnusedPort(),
+        'serverCert': getCertFilename('sas.cert'),
+        'serverKey': getCertFilename('sas.key'),
+        'caCert': getCertFilename('ca.cert')
+    }
+    sas_harness_dump_records = {
+        'cbsdRecords': generateCbsdRecords([device_c1], [[grant_g1]])
+    }
+    config = {
+        'registrationRequestC1': device_c1,
+        'registrationRequestC2': device_c2,
+        'conditionalRegistrationData': conditionals,
+        'grantRequestG1': grant_g1,
+        'grantRequestG2': grant_g2,
+        'sasTestHarnessConfig': sas_harness_config,
+        'sasTestHarnessDumpRecords': sas_harness_dump_records
+    }
+    writeConfig(filename, config)
+
+  @configurable_testcase(generate_GRA_5_default_config)
+  def test_WINNF_FT_S_GRA_5(self, config_filename):
+    """ SAS rejects GrantRequest if the CBSD already has a Grant from another SAS.
+
+    """
+    config = loadConfig(config_filename)
+    # Very light checking of the config file.
+    self.assertValidConfig(
+        config, {
+            'registrationRequestC1': dict,
+            'registrationRequestC2': dict,
+            'conditionalRegistrationData': list,
+            'grantRequestG1': dict,
+            'grantRequestG2': dict,
+            'sasTestHarnessConfig': dict,
+            'sasTestHarnessDumpRecords': dict
+        })
+
+    device_c1 = config['registrationRequestC1']
+    device_c2 = config['registrationRequestC2']
+    grant_g1 = config['grantRequestG1']
+    grant_g2 = config['grantRequestG2']
+    sas_test_harness_dump_records = [config['sasTestHarnessDumpRecords']['cbsdRecords']]
+
+    # Inserting FCC IDs on SUUT before CPAS so SUUT will know about them
+    self._sas_admin.InjectFccId({'fccId': device_c1['fccId']})
+    self._sas_admin.InjectFccId({'fccId': device_c2['fccId']})
+
+    # Create the SAS Test Harness.
+    sas_test_harness_server = SasTestHarnessServer(
+        config['sasTestHarnessConfig']['sasTestHarnessName'],
+        config['sasTestHarnessConfig']['hostName'],
+        config['sasTestHarnessConfig']['port'],
+        config['sasTestHarnessConfig']['serverCert'],
+        config['sasTestHarnessConfig']['serverKey'],
+        config['sasTestHarnessConfig']['caCert'])
+    self.InjectTestHarnessFccIds(config['sasTestHarnessDumpRecords']['cbsdRecords'])
+    sas_test_harness_server.writeFadRecords(sas_test_harness_dump_records)
+
+    # Start the SAS Test Harness server
+    sas_test_harness_server.start()
+
+    # Notify the SAS UUT about the SAS Test Harness
+    certificate_hash = getCertificateFingerprint(config['sasTestHarnessConfig']['serverCert'])
+    self._sas_admin.InjectPeerSas({'certificateHash': certificate_hash,
+                                   'url': sas_test_harness_server.getBaseUrl()})
+
+    # Step 2: Trigger CPAS in the SAS UUT and wait until complete.
+    self.TriggerDailyActivitiesImmediatelyAndWaitUntilComplete()
+
+    # Pre-load conditional registration data for C1 and C2 CBSDs.
+    if config['conditionalRegistrationData']:
+      self._sas_admin.PreloadRegistrationData({
+          'registrationData': config['conditionalRegistrationData']})
+
+    # Step 3: Register CBSDs C1 and C2 with SAS UUT
+    # The assertRegistered function does the Inject FCC ID and user ID for the registration requests
+    cbsd_ids = self.assertRegistered([device_c1, device_c2])
+    grant_g1['cbsdId'] = cbsd_ids[0]
+    grant_g2['cbsdId'] = cbsd_ids[1]
+
+    # Step 4: Send a valid Grant Request for C1 and C2 to the SAS UUT.
+    request = {'grantRequest': [grant_g1, grant_g2]}
+    response = self._sas.Grant(request)['grantResponse']
+
+    # Check the length of request and response match.
+    self.assertEqual(len(request['grantRequest']), len(response))
+
+    # Check responseCode is 401 for CBSD C1.
+    self.assertEqual(response[0]['response']['responseCode'], 401)
+
+    # Check responseCode is 0 for CBSD C2.
+    self.assertEqual(response[1]['response']['responseCode'], 0)
+
+    # As Python garbage collector is not very consistent, directory is not getting deleted.
+    # Hence, explicitly stopping SAS Test Harness and cleaning up
+    sas_test_harness_server.shutdown()
+    del sas_test_harness_server
+
+  def generate_GRA_6_default_config(self, filename):
+    """Generates the WinnForum configuration for GRA_6"""
+    # Create the actual config for GRA_6
+
+    # Load device_a with registration in SAS Test Harness.
+    device_c1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_a.json')))
+
+    # Load grant request.
+    grant_g1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+
+    grant_g2 = json.load(
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+    grant_g2['operationParam']['operationFrequencyRange'][
+        'lowFrequency'] = 3645000000
+    grant_g2['operationParam']['operationFrequencyRange'][
+        'highFrequency'] = 3655000000
+    sas_harness_config = {
+        'sasTestHarnessName': 'SAS-TestHarness-1',
+        'hostName': getFqdnLocalhost(),
+        'port': getUnusedPort(),
+        'serverCert': getCertFilename('sas.cert'),
+        'serverKey': getCertFilename('sas.key'),
+        'caCert': getCertFilename('ca.cert')
+    }
+    sas_harness_dump_records = {
+        'cbsdRecords': generateCbsdRecords([device_c1],
+                                           [[grant_g2]])
+    }
+
+    config = {
+        'registrationRequestC1': device_c1,
+        'grantRequestG1': grant_g1,
+        'sasTestHarnessConfig': sas_harness_config,
+        'sasTestHarnessDumpRecords': sas_harness_dump_records
+    }
+    writeConfig(filename, config)
+
+  @configurable_testcase(generate_GRA_6_default_config)
+  def test_WINNF_FT_S_GRA_6(self, config_filename):
+    """ SAS terminates Grant upon learning that the CBSD has a Grant from another SAS
+
+    The response should be 500 for HeartBeat Response.
+    """
+
+    config = loadConfig(config_filename)
+    # Very light checking of the config file.
+    self.assertValidConfig(
+        config, {
+            'registrationRequestC1': dict,
+            'grantRequestG1': dict,
+            'sasTestHarnessConfig': dict,
+            'sasTestHarnessDumpRecords': dict
+        })
+
+    device_c1 = config['registrationRequestC1']
+    grant_g1 = config['grantRequestG1']
+    sas_test_harness_dump_records = [config['sasTestHarnessDumpRecords']['cbsdRecords']]
+
+    # Step 1: Register CBSD C1 and get a Grant G1 from SAS UUT
+    # The assertRegisteredAndGranted function does the Inject FCC ID
+    # and user ID for the registration requests.
+    cbsd_ids, grant_ids = self.assertRegisteredAndGranted([device_c1], [grant_g1])
+
+    # Step 2: Create SAS-TH Server instance to dump FAD records
+    sas_test_harness_server = SasTestHarnessServer(
+        config['sasTestHarnessConfig']['sasTestHarnessName'],
+        config['sasTestHarnessConfig']['hostName'],
+        config['sasTestHarnessConfig']['port'],
+        config['sasTestHarnessConfig']['serverCert'],
+        config['sasTestHarnessConfig']['serverKey'],
+        config['sasTestHarnessConfig']['caCert'])
+    self.InjectTestHarnessFccIds(config['sasTestHarnessDumpRecords']['cbsdRecords'])
+    sas_test_harness_server.writeFadRecords(sas_test_harness_dump_records)
+
+    # Start the Test Harness server
+    sas_test_harness_server.start()
+
+    # Notify the SAS UUT about the SAS Test Harness
+    certificate_hash = getCertificateFingerprint(config['sasTestHarnessConfig']['serverCert'])
+    self._sas_admin.InjectPeerSas({'certificateHash': certificate_hash,
+                                   'url': sas_test_harness_server.getBaseUrl()})
+
+    # Step 3: Trigger CPAS in the SAS UUT and wait until complete.
+    self.TriggerDailyActivitiesImmediatelyAndWaitUntilComplete()
+
+    # Step 4: Send the Heartbeat Request to the SAS UUT.
+    request = {
+        'heartbeatRequest': [{
+            'cbsdId': cbsd_ids[0],
+            'grantId': grant_ids[0],
+            'operationState': 'GRANTED'
+        }]}
+    response = self._sas.Heartbeat(request)['heartbeatResponse'][0]
+
+    # Check the heartbeat response.
+    self.assertEqual(response['response']['responseCode'], 500)
+
+    # As Python garbage collector is not very consistent, directory is not getting deleted.
+    # Hence, explicitly stopping SAS Test Harness and cleaning up
+    sas_test_harness_server.shutdown()
+    del sas_test_harness_server
 
   @winnforum_testcase
   def test_WINNF_FT_S_GRA_7(self):
@@ -554,122 +802,6 @@ class GrantTestcase(sas_testcase.SasTestCase):
       self.assertEqual(response[response_num]['response']['responseCode'], 401)
 
   @winnforum_testcase
-  def test_WINNF_FT_S_GRA_13(self):
-    """Requests for multiple PAL channels and for multiple GAA channels.
-
-    No incumbent present in the PAL and GAA frequency ranges used in the
-    requests.
-
-    The response should be 0.
-    """
-
-    # Load 3 devices
-    device_a = json.load(
-        open(os.path.join('testcases', 'testdata', 'device_a.json')))
-    device_c = json.load(
-        open(os.path.join('testcases', 'testdata', 'device_c.json')))
-    device_e = json.load(
-        open(os.path.join('testcases', 'testdata', 'device_e.json')))
-
-    # First PPA with device_a and FR1 = 3550 - 3560
-    pal_low_frequency1 = 3550000000
-    pal_high_frequency1 = 3560000000
-    pal_record1 = json.load(
-        open(os.path.join('testcases', 'testdata', 'pal_record_0.json')))
-    ppa_record1 = json.load(
-        open(os.path.join('testcases', 'testdata', 'ppa_record_0.json')))
-    ppa_record1, pal_record1 = makePpaAndPalRecordsConsistent(
-        ppa_record1, [pal_record1], pal_low_frequency1, pal_high_frequency1,
-        device_a['userId'])
-
-    # Move device_a into the first PPA zone
-    device_a['installationParam']['latitude'], device_a['installationParam'][
-        'longitude'] = getRandomLatLongInPolygon(ppa_record1)
-
-    # Second PPA with device_c and FR2 = 3600 - 3610
-    pal_low_frequency2 = 3600000000
-    pal_high_frequency2 = 3610000000
-    pal_record2 = json.load(
-        open(os.path.join('testcases', 'testdata', 'pal_record_1.json')))
-    ppa_record2 = json.load(
-        open(os.path.join('testcases', 'testdata', 'ppa_record_1.json')))
-    ppa_record2, pal_record2 = makePpaAndPalRecordsConsistent(
-        ppa_record2, [pal_record2], pal_low_frequency2, pal_high_frequency2,
-        device_c['userId'])
-
-    # Move device_c into the second PPA zone
-    device_c['installationParam']['latitude'], device_c['installationParam'][
-        'longitude'] = getRandomLatLongInPolygon(ppa_record2)
-
-    # Inject two PAL database records
-    self._sas_admin.InjectPalDatabaseRecord(pal_record1[0])
-    self._sas_admin.InjectPalDatabaseRecord(pal_record2[0])
-
-    # Register 3 devices.
-    cbsd_ids = self.assertRegistered([device_a, device_c, device_e])
-
-    # Update PPA record with device_a's CBSD ID and Inject zone data
-    ppa_record1['ppaInfo']['cbsdReferenceId'] = [cbsd_ids[0]]
-    zone_id = self._sas_admin.InjectZoneData({'record': ppa_record1})
-    self.assertTrue(zone_id)
-
-    # Update PPA record with device_c's CBSD ID and Inject data
-    ppa_record2['ppaInfo']['cbsdReferenceId'] = [cbsd_ids[1]]
-    zone_id = self._sas_admin.InjectZoneData({'record': ppa_record2})
-    self.assertTrue(zone_id)
-
-    # Create grant requests
-    grant_0 = json.load(
-        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
-    grant_1 = json.load(
-        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
-    grant_2 = json.load(
-        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
-    grant_0['cbsdId'] = cbsd_ids[0]
-    grant_1['cbsdId'] = cbsd_ids[1]
-    grant_2['cbsdId'] = cbsd_ids[2]
-    # Grant 1 & 2: Request for PAL frequency
-    # Grant 3: Frequency does not overlap with FR1 and FR2
-    grant_0['operationParam']['operationFrequencyRange'] = {
-        'lowFrequency': pal_low_frequency1,
-        'highFrequency': pal_high_frequency1
-    }
-    grant_1['operationParam']['operationFrequencyRange'] = {
-        'lowFrequency': pal_low_frequency2,
-        'highFrequency': pal_high_frequency2
-    }
-    grant_2['operationParam']['operationFrequencyRange'] = {
-        'lowFrequency': 3630000000,
-        'highFrequency': 3640000000
-    }
-    request = {'grantRequest': [grant_0, grant_1, grant_2]}
-    # Send grant requests
-    response = self._sas.Grant(request)['grantResponse']
-    # Check grant response 1 and 2
-    self.assertEqual(len(response), 3)
-    for response_num, resp in enumerate(response[:2]):
-      self.assertEqual(resp['cbsdId'], cbsd_ids[response_num])
-      self.assertTrue('grantId' in resp)
-      self.assertEqual(resp['channelType'], 'PAL')
-      self.assertEqual(resp['response']['responseCode'], 0)
-    # Check grantExpireTime is less than corresponding PAL licenseExpiration
-    self.assertLess(
-        datetime.strptime(response[0]['grantExpireTime'], '%Y-%m-%dT%H:%M:%SZ'),
-        datetime.strptime(
-            pal_record1[0]['license']['licenseExpiration'],
-            '%Y-%m-%dT%H:%M:%SZ'))
-    self.assertLess(
-        datetime.strptime(response[1]['grantExpireTime'], '%Y-%m-%dT%H:%M:%SZ'),
-        datetime.strptime(
-            pal_record2[0]['license']['licenseExpiration'],
-            '%Y-%m-%dT%H:%M:%SZ'))
-    # Check grant response 3
-    self.assertEqual(response[2]['cbsdId'], cbsd_ids[2])
-    self.assertTrue('grantId' in response[2])
-    self.assertEqual(response[2]['channelType'], 'GAA')
-    self.assertEqual(response[2]['response']['responseCode'], 0)
-
-  @winnforum_testcase
   def test_WINNF_FT_S_GRA_11(self):
     """Un-Supported CBSD maximum EIRP
 
@@ -708,7 +840,7 @@ class GrantTestcase(sas_testcase.SasTestCase):
         'measCapability': device_4['measCapability']
     }
 
-        
+
     conditionals_5 = {
         'cbsdCategory': device_5['cbsdCategory'],
         'fccId': device_5['fccId'],
@@ -728,7 +860,7 @@ class GrantTestcase(sas_testcase.SasTestCase):
     self._sas_admin.InjectFccId({'fccId': device_3['fccId'], 'fccMaxEirp': 40})
     self._sas_admin.InjectFccId({'fccId': device_4['fccId'], 'fccMaxEirp': 47})
     self._sas_admin.InjectFccId({'fccId': device_5['fccId'], 'fccMaxEirp': 30})
-    
+
     self._sas_admin.InjectUserId({'userId': device_1['userId']})
     self._sas_admin.InjectUserId({'userId': device_2['userId']})
     self._sas_admin.InjectUserId({'userId': device_3['userId']})
@@ -736,7 +868,7 @@ class GrantTestcase(sas_testcase.SasTestCase):
     self._sas_admin.InjectUserId({'userId': device_5['userId']})
 
     self._sas_admin.PreloadRegistrationData(conditionals)
- 
+
     # Remove conditionals from registration for cbsdId 3,5
     del device_3['cbsdCategory']
     del device_3['airInterface']
@@ -753,7 +885,7 @@ class GrantTestcase(sas_testcase.SasTestCase):
 
     # set eirpCapability = 20 for cbsdId 1
     device_1['installationParam']['eirpCapability'] = 20
-    
+
     # send registration requests
     devices = [device_1, device_2, device_3, device_4, device_5]
     request = {'registrationRequest': devices}
@@ -873,7 +1005,7 @@ class GrantTestcase(sas_testcase.SasTestCase):
     self.assertEqual(len(response), 3)
     self.assertEqual(response[0]['cbsdId'], cbsd_ids[0])
     self.assertEqual(response[1]['cbsdId'], cbsd_ids[1])
-    
+
 
     # 1st and 2nd cbsdId responseCode should be 0
     self.assertEqual(response[0]['response']['responseCode'], 0)
@@ -886,7 +1018,123 @@ class GrantTestcase(sas_testcase.SasTestCase):
     # 3rd cbsdId responseCode should be 101
     self.assertEqual(response[2]['response']['responseCode'], 101)
     del request, response
-    
+
+  @winnforum_testcase
+  def test_WINNF_FT_S_GRA_13(self):
+    """Requests for multiple PAL channels and for multiple GAA channels.
+
+    No incumbent present in the PAL and GAA frequency ranges used in the
+    requests.
+
+    The response should be 0.
+    """
+
+    # Load 3 devices
+    device_a = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_a.json')))
+    device_c = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_c.json')))
+    device_e = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_e.json')))
+
+    # First PPA with device_a and FR1 = 3550 - 3560
+    pal_low_frequency1 = 3550000000
+    pal_high_frequency1 = 3560000000
+    pal_record1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'pal_record_0.json')))
+    ppa_record1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'ppa_record_0.json')))
+    ppa_record1, pal_record1 = makePpaAndPalRecordsConsistent(
+        ppa_record1, [pal_record1], pal_low_frequency1, pal_high_frequency1,
+        device_a['userId'])
+
+    # Move device_a into the first PPA zone
+    device_a['installationParam']['latitude'], device_a['installationParam'][
+        'longitude'] = getRandomLatLongInPolygon(ppa_record1)
+
+    # Second PPA with device_c and FR2 = 3600 - 3610
+    pal_low_frequency2 = 3600000000
+    pal_high_frequency2 = 3610000000
+    pal_record2 = json.load(
+        open(os.path.join('testcases', 'testdata', 'pal_record_1.json')))
+    ppa_record2 = json.load(
+        open(os.path.join('testcases', 'testdata', 'ppa_record_1.json')))
+    ppa_record2, pal_record2 = makePpaAndPalRecordsConsistent(
+        ppa_record2, [pal_record2], pal_low_frequency2, pal_high_frequency2,
+        device_c['userId'])
+
+    # Move device_c into the second PPA zone
+    device_c['installationParam']['latitude'], device_c['installationParam'][
+        'longitude'] = getRandomLatLongInPolygon(ppa_record2)
+
+    # Inject two PAL database records
+    self._sas_admin.InjectPalDatabaseRecord(pal_record1[0])
+    self._sas_admin.InjectPalDatabaseRecord(pal_record2[0])
+
+    # Register 3 devices.
+    cbsd_ids = self.assertRegistered([device_a, device_c, device_e])
+
+    # Update PPA record with device_a's CBSD ID and Inject zone data
+    ppa_record1['ppaInfo']['cbsdReferenceId'] = [cbsd_ids[0]]
+    zone_id = self._sas_admin.InjectZoneData({'record': ppa_record1})
+    self.assertTrue(zone_id)
+
+    # Update PPA record with device_c's CBSD ID and Inject data
+    ppa_record2['ppaInfo']['cbsdReferenceId'] = [cbsd_ids[1]]
+    zone_id = self._sas_admin.InjectZoneData({'record': ppa_record2})
+    self.assertTrue(zone_id)
+
+    # Create grant requests
+    grant_0 = json.load(
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+    grant_1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+    grant_2 = json.load(
+        open(os.path.join('testcases', 'testdata', 'grant_0.json')))
+    grant_0['cbsdId'] = cbsd_ids[0]
+    grant_1['cbsdId'] = cbsd_ids[1]
+    grant_2['cbsdId'] = cbsd_ids[2]
+    # Grant 1 & 2: Request for PAL frequency
+    # Grant 3: Frequency does not overlap with FR1 and FR2
+    grant_0['operationParam']['operationFrequencyRange'] = {
+        'lowFrequency': pal_low_frequency1,
+        'highFrequency': pal_high_frequency1
+    }
+    grant_1['operationParam']['operationFrequencyRange'] = {
+        'lowFrequency': pal_low_frequency2,
+        'highFrequency': pal_high_frequency2
+    }
+    grant_2['operationParam']['operationFrequencyRange'] = {
+        'lowFrequency': 3630000000,
+        'highFrequency': 3640000000
+    }
+    request = {'grantRequest': [grant_0, grant_1, grant_2]}
+    # Send grant requests
+    response = self._sas.Grant(request)['grantResponse']
+    # Check grant response 1 and 2
+    self.assertEqual(len(response), 3)
+    for response_num, resp in enumerate(response[:2]):
+      self.assertEqual(resp['cbsdId'], cbsd_ids[response_num])
+      self.assertTrue('grantId' in resp)
+      self.assertEqual(resp['channelType'], 'PAL')
+      self.assertEqual(resp['response']['responseCode'], 0)
+    # Check grantExpireTime is less than corresponding PAL licenseExpiration
+    self.assertLessEqual(
+        datetime.strptime(response[0]['grantExpireTime'], '%Y-%m-%dT%H:%M:%SZ'),
+        datetime.strptime(
+            pal_record1[0]['license']['licenseExpiration'],
+            '%Y-%m-%dT%H:%M:%SZ'))
+    self.assertLessEqual(
+        datetime.strptime(response[1]['grantExpireTime'], '%Y-%m-%dT%H:%M:%SZ'),
+        datetime.strptime(
+            pal_record2[0]['license']['licenseExpiration'],
+            '%Y-%m-%dT%H:%M:%SZ'))
+    # Check grant response 3
+    self.assertEqual(response[2]['cbsdId'], cbsd_ids[2])
+    self.assertTrue('grantId' in response[2])
+    self.assertEqual(response[2]['channelType'], 'GAA')
+    self.assertEqual(response[2]['response']['responseCode'], 0)
+
   @winnforum_testcase
   def test_WINNF_FT_S_GRA_15(self):
     """Two grant requests: 1. Missing maxEirp and 2. Invalid frequency range.
@@ -995,4 +1243,248 @@ class GrantTestcase(sas_testcase.SasTestCase):
         self.assertTrue('heartbeatInterval' in resp)
         self.assertIsInstance(resp['heartbeatInterval'], int)
         self.assertTrue(resp['heartbeatInterval'] > 0)
+
+  def generate_GRA_17_default_config(self, filename):
+    """Generates the WinnForum configuration for GRA.17."""
+    # Load device info
+    device_a = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_a.json')))
+    device_c = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_c.json')))
+    device_e = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_e.json')))
+    device_f = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_f.json')))
+    device_b = json.load(
+        open(os.path.join('testcases', 'testdata', 'device_b.json')))
+
+    # device_a, device_c, device_e and device_f are Category A.
+    self.assertEqual(device_a['cbsdCategory'], 'A')
+    self.assertEqual(device_c['cbsdCategory'], 'A')
+    self.assertEqual(device_e['cbsdCategory'], 'A')
+    self.assertEqual(device_f['cbsdCategory'], 'A')
+
+    # Device_b is Category B with conditionals pre-loaded.
+    self.assertEqual(device_b['cbsdCategory'], 'B')
+    conditionals_b = {
+        'cbsdCategory': device_b['cbsdCategory'],
+        'fccId': device_b['fccId'],
+        'cbsdSerialNumber': device_b['cbsdSerialNumber'],
+        'airInterface': device_b['airInterface'],
+        'installationParam': device_b['installationParam']
+    }
+    conditionals = [conditionals_b]
+    del device_b['installationParam']
+    del device_b['cbsdCategory']
+    del device_b['airInterface']
+
+    # Prepare grant requests.
+    # All valid parameters, will have device_a CBSD ID
+    grant_0 = {
+        'cbsdId': 0,
+        'operationParam': {
+            'maxEirp': 10,
+            'operationFrequencyRange': {
+                'lowFrequency': 3550000000,
+                'highFrequency': 3560000000
+            }
+        }
+    }
+    # CBSD ID will be removed (device_b)
+    grant_1 = {
+        'cbsdId': 'REMOVE',
+        'operationParam': {
+            'maxEirp': 10,
+            'operationFrequencyRange': {
+                'lowFrequency': 3620000000,
+                'highFrequency': 3630000000
+            }
+        }
+    }
+    # LowFrequency > HighFrequency, will have device_c CBSD ID
+    grant_2 = {
+        'cbsdId': 2,
+        'operationParam': {
+            'maxEirp': 10,
+            'operationFrequencyRange': {
+                'lowFrequency': 3640000000,
+                'highFrequency': 3630000000
+            }
+        }
+    }
+    # Partially outside CBRS band, will have device_e CBSD ID
+    grant_3 = {
+        'cbsdId': 3,
+        'operationParam': {
+            'maxEirp': 10,
+            'operationFrequencyRange': {
+                'lowFrequency': 3450000000,
+                'highFrequency': 3600000000
+            }
+        }
+    }
+    # CBSD not part of claimed PPA, but in the PPA zone; requests PAL channel
+    # will have device_f CBSD ID
+    grant_4 = {
+        'cbsdId': 4,
+        'operationParam': {
+            'maxEirp': 10,
+            'operationFrequencyRange': {
+                'lowFrequency': 3550000000,
+                'highFrequency': 3560000000
+            }
+        }
+    }
+    # Create the actual config.
+    devices = [device_a, device_b, device_c, device_e, device_f]
+    grant_requests = [grant_0, grant_1, grant_2, grant_3, grant_4,]
+    # Devices inside and part of the claimed PPA.
+    # Contains the index of devices in the devices list.
+    # Eg: 0 means devices[0] which is device_a
+    ppa_cluster_list = [0]
+    # Devices in the zone, but not part of PPA.
+    # Contains the index of devices in the devices list.
+    # Eg: 4 means devices[4] which is device_f
+    devices_in_ppa_zone = [4]
+    pal_low_frequency = 3550000000
+    pal_high_frequency = 3560000000
+    pal_record_1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'pal_record_0.json')))
+    ppa_record_1 = json.load(
+        open(os.path.join('testcases', 'testdata', 'ppa_record_0.json')))
+    ppa_record_1, pal_records = makePpaAndPalRecordsConsistent(
+        ppa_record_1, [pal_record_1], pal_low_frequency, pal_high_frequency,
+        devices[ppa_cluster_list[0]]['userId'])
+    # Move devices in ppa_cluster_list and devices_in_ppa_zone
+    # into the PPA zone
+    for device_index in ppa_cluster_list:
+      devices[device_index]['installationParam']['latitude'], devices[
+          device_index]['installationParam'][
+              'longitude'] = getRandomLatLongInPolygon(ppa_record_1)
+    for device_index in devices_in_ppa_zone:
+      devices[device_index]['installationParam']['latitude'], devices[
+          device_index]['installationParam'][
+              'longitude'] = getRandomLatLongInPolygon(ppa_record_1)
+
+    config = {
+        'registrationRequests': devices,
+        'conditionalRegistrationData': conditionals,
+        # List of PAL records for all PPAs
+        'palRecords': pal_records,
+        'ppas': [{
+            'ppaRecord': ppa_record_1,
+            # Indexing the same way as CBSD IDs.
+            'ppaClusterList': ppa_cluster_list
+        }],
+        'grantRequests': grant_requests,
+        'expectedResponseCodes': [
+            (0,),  # all valid params => SUCCESS
+            (102,),  # missing CBSD ID => MISSING_PARAM
+            (103,),  # LowFrequency > HighFrequency => INVALID_VALUE
+            (300,),  # partially overlapping CBRS band => UNSUPPORTED_SPECTRUM
+            (400,),  # CBSD inside (but not part of) claimed PPA => INTERFERENCE
+        ]
+    }
+    writeConfig(filename, config)
+
+  @configurable_testcase(generate_GRA_17_default_config)
+  def test_WINNF_FT_S_GRA_17(self, config_filename):
+    """[Configurable] Array grant request."""
+
+    config = loadConfig(config_filename)
+    # Very light checking of the config file.
+    self.assertValidConfig(
+        config, {
+            'registrationRequests': list,
+            'conditionalRegistrationData': list,
+            'palRecords': list,
+            'ppas': list,
+            'grantRequests': list,
+            'expectedResponseCodes': list
+        })
+    self.assertEqual(
+        len(config['registrationRequests']),
+        len(config['grantRequests']))
+    self.assertEqual(
+        len(config['grantRequests']),
+        len(config['expectedResponseCodes']))
+    if ('ppas' in config) and (config['ppas']):
+      for ppa in config['ppas']:
+        self.assertTrue('ppaRecord' in ppa)
+        self.assertTrue('ppaClusterList' in ppa)
+
+    try:
+      cbsd_ids = self.assertRegistered(config['registrationRequests'],
+                                       config['conditionalRegistrationData'])
+    except Exception:
+      logging.error(common_strings.EXPECTED_SUCCESSFUL_REGISTRATION)
+      raise
+
+
+    # Inject PAL database record
+    if ('palRecords' in config) and (config['palRecords']):
+      for pal_record in config['palRecords']:
+        try:
+          self._sas_admin.InjectPalDatabaseRecord(pal_record)
+        except Exception:
+          logging.error(common_strings.CONFIG_ERROR_SUSPECTED)
+          raise
+
+    # Update PPA records with devices' CBSD ID and Inject zone data
+    if ('ppas' in config) and (config['ppas']):
+      for ppa in config['ppas']:
+        for device_index in ppa['ppaClusterList']:
+          ppa['ppaRecord']['ppaInfo']['cbsdReferenceId'] = [
+              cbsd_ids[device_index]
+          ]
+        try:
+          zone_id = self._sas_admin.InjectZoneData({'record': ppa['ppaRecord']})
+          self.assertTrue(zone_id)
+        except Exception:
+          logging.error(common_strings.CONFIG_ERROR_SUSPECTED)
+          raise
+
+    # Trigger daily activities
+    if ('ppas' in config) and (config['ppas']):
+      self.TriggerDailyActivitiesImmediatelyAndWaitUntilComplete()
+
+    # Send Grant request
+    grant_request = config['grantRequests']
+    addCbsdIdsToRequests(cbsd_ids, grant_request)
+    request = {'grantRequest': grant_request}
+    responses = self._sas.Grant(request)['grantResponse']
+    # Check grant response
+    self.assertEqual(len(responses), len(config['expectedResponseCodes']))
+    has_error = False
+    for i, response in enumerate(responses):
+      expected_response_codes = config['expectedResponseCodes'][i]
+      logging.debug('Looking at response number %d', i)
+      logging.debug('Expecting to see response code in set %s in response: %s',
+                    expected_response_codes, response)
+
+      # Check response code.
+      response_code = response['response']['responseCode']
+      if response_code not in expected_response_codes:
+        has_error = True
+        logging.error('Error: response %d is expected to have a responseCode in set %s but instead had responseCode %d.',
+                      i, expected_response_codes, response_code)
+        logging.error('Grant request: %s', grant_request[i])
+        logging.error('Grant response: %s', response)
+
+      # If the corresponding request contained a valid cbsdId, the
+      # response shall contain the same cbsdId.
+      if 'cbsdId' in grant_request[i]:
+        if grant_request[i]['cbsdId'] in cbsd_ids:
+          self.assertEqual(response['cbsdId'], grant_request[i]['cbsdId'])
+          # If response is SUCCESS, verify the response contains a
+          # valid Grant ID.
+          if response['response']['responseCode'] == 0:
+            self.assertTrue('grantId' in response)
+          else:
+            self.assertFalse('grantId' in response)
+
+    # Outside the 'for' loop.
+    self.assertFalse(
+        has_error,
+        'Error found in at least one of the responses. See logs for details.')
 

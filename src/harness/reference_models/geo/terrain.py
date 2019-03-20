@@ -187,7 +187,7 @@ class TerrainDriver:
     alt = np.zeros(len(lat))
 
     if self.do_flat:
-      return alt[0] if is_scalar else alt
+      return alt[0]+10 if is_scalar else alt+10
 
     # Find the coordinates of the lat/lon in the tile file,
     # in floating point units.
@@ -294,10 +294,9 @@ class TerrainDriver:
       num_points = 2
 
     resolution = dist / float(num_points-1)
-    points = vincenty.GeodesicSampling(lat1, lon1, lat2, lon2, num_points)
+    lats, lons = vincenty.GeodesicSampling(lat1, lon1, lat2, lon2, num_points)
     elev = [num_points-1, resolution]
-    lat, lon = zip(*points)
-    elev.extend(self.GetTerrainElevation(lat, lon, do_interp))
+    elev.extend(self.GetTerrainElevation(lats, lons, do_interp))
     return elev
 
   def ComputeNormalizedHaat(self, lat, lon):

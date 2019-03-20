@@ -10,11 +10,12 @@
   "installationParam": {
     "latitude": 39.327050,
     "longitude": -100.604567,
-    "height": 6.1,
-    "heightType": "AMSL",
+    "height": 4.1,
+    "heightType": "AGL",
     "indoorDeployment": false,
     "antennaGain": 45,
-    "antennaBeamwidth": 12
+    "antennaBeamwidth": 12,
+    "antennaAzimuth": 270
   },
   "measCapability": [
   ]

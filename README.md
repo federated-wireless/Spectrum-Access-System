@@ -93,6 +93,25 @@ JSON schema validation support.
 This Python library can be installed with <code>pip</code>. It provides
 support for the OpenSSL library for Python.
 
+* mock (https://pypi.python.org/pypi/mock)
+
+This Python library can be installed with <code>pip</code>. It provides
+support for creating testing mocks.
+
+* functools32 (https://pypi.python.org/pypi/functools32)
+
+This Python library can be installed with <code>pip</code>. It provides
+support for advanced functools such as OrderedDict and lru_cache memoization.
+
+* psutil (https://github.com/giampaolo/psutil)
+
+This Python library can be installed with <code>pip</code>. It provides
+information on running processes and system (RAM,..).
+
+* portpicker (https://pypi.org/project/portpicker)
+
+This Python library can be installed with <code>pip</code>. It allows to
+find unused network ports on a host.
 
 For all these Python packages, a good way to test their installation is to
 run the Python interpreter and then issue an <code>import xyz</code> command,
@@ -112,4 +131,3 @@ data/ folder, but kept instead in a separate Git repository found at:
  https://github.com/Wireless-Innovation-Forum/SAS-Data
 
 See the corresponding README.md for more details.
-

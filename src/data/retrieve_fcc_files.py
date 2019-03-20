@@ -42,11 +42,16 @@ def RetrieveURL(url):
 
 # Retrieve all the FCC data files into the current directory.
 def RetrieveFCC():
-  RetrieveURL('https://transition.fcc.gov/oet/info/maps/uscabdry/uscabdry.zip')
+  # The following US/Canada forder file cannot be found anymore in this site.
+  # RetrieveURL('https://transition.fcc.gov/oet/info/maps/uscabdry/uscabdry.zip')
+
+  # The Mexican border file
   RetrieveURL('http://www.ibwc.gov/GIS_Maps/downloads/us_mex_boundary.zip')
-  RetrieveURL('http://transition.fcc.gov/ib/sd/3650/grandftr.pdf')
-  RetrieveURL('https://apps.fcc.gov/edocs_public/attachmatch/DOC-333151A1.xlsx')
-  RetrieveURL('https://apps.fcc.gov/edocs_public/attachmatch/DOC-334099A1.xlsx')
+
+  # The following files are legacy unused files
+  #RetrieveURL('http://transition.fcc.gov/ib/sd/3650/grandftr.pdf')
+  #RetrieveURL('https://apps.fcc.gov/edocs_public/attachmatch/DOC-333151A1.xlsx')
+  #RetrieveURL('https://apps.fcc.gov/edocs_public/attachmatch/DOC-334099A1.xlsx')
 
 
 # Find the directory of this script.
@@ -59,4 +64,3 @@ if not os.path.exists(dest):
 os.chdir(dest)
 
 RetrieveFCC()
-
